@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-playground/validator/v10"
 	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"github.com/rs/cors"
@@ -17,8 +16,6 @@ import (
 
 var ctx = context.Background()
 var client *redis.Client
-
-var validate *validator.Validate
 
 var CHARACTERS = []string{
 	"cat",
@@ -39,22 +36,12 @@ func generateRandomCards() []string {
 	return randomDeck
 }
 
-func init() {
+func main() {
 	// Initialize Redis client
 	client = redis.NewClient(&redis.Options{
 		Addr:     "redis-11333.c330.asia-south1-1.gce.cloud.redislabs.com:11333",
 		Password: "K5buAV402UxwpMmEeTmgmw7oDmGqoE0j",
 	})
-
-	// Initialize the validator
-	validate = validator.New()
-}
-func main() {
-	// // Initialize Redis client
-	// client = redis.NewClient(&redis.Options{
-	// 	Addr:     "redis-11333.c330.asia-south1-1.gce.cloud.redislabs.com:11333",
-	// 	Password: "K5buAV402UxwpMmEeTmgmw7oDmGqoE0j",
-	// })
 	defer func() {
 		if err := client.Close(); err != nil {
 			fmt.Println("Error closing Redis client:", err)
@@ -213,42 +200,45 @@ func getAllUsernamesHandler(c *gin.Context) {
 
 // Handler for updating player stats
 func updatePlayerStatsHandler(c *gin.Context) {
-	// Get player ID from the URL parameter
-	playerID := c.Param("id")
-
-	// Retrieve stats update from the request body
-	var statsUpdate struct {
-		Win  int `json:"win" binding:"required"`
-		Loss int `json:"loss" binding:"required"`
+	// Retrieve player ID and game result from the request body
+	var requestBody struct {
+		Win  int `json:"win"`
+		Loss int `json:"loss"`
 	}
 
-	if err := c.ShouldBindJSON(&statsUpdate); err != nil {
+	if err := c.ShouldBindJSON(&requestBody); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Check if the player exists
-	existingID, err := client.Get(ctx, "player:"+playerID).Result()
-	if err != nil && err == redis.Nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Player not found"})
-		return
-	} else if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check player existence"})
-		return
-	}
+	// Get the player ID from the URL parameters
+	playerID := c.Param("id")
 
-	// Update player stats in Redis hash
-	err = client.HIncrBy(ctx, "player:"+playerID, "wins", int64(statsUpdate.Win)).Err()
+	// Get the current player stats
+	key := "player:" + playerID
+	playerStats, err := client.HGetAll(ctx, key).Result()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update player stats"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve player stats from Redis"})
 		return
 	}
 
-	err = client.HIncrBy(ctx, "player:"+playerID, "losses", int64(statsUpdate.Loss)).Err()
+	// Update the win and loss fields based on the game result
+	wins, _ := strconv.Atoi(playerStats["wins"])
+	losses, _ := strconv.Atoi(playerStats["losses"])
+
+	wins += requestBody.Win
+	losses += requestBody.Loss
+
+	// Update the player stats in Redis
+	err = client.HMSet(ctx, key, map[string]interface{}{
+		"wins":   strconv.Itoa(wins),
+		"losses": strconv.Itoa(losses),
+	}).Err()
+
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update player stats"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update player stats in Redis"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Player stats updated successfully", "id": existingID})
+	c.JSON(http.StatusOK, gin.H{"message": "Player stats updated successfully"})
 }
